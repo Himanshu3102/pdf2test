@@ -357,9 +357,20 @@ function AuthScreen({ onAuthed }: { onAuthed: (user: AuthUser) => void }) {
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    if (mode === "register" && password !== confirm) {
-      setError("Passwords do not match.");
-      return;
+    const u = username.trim();
+    if (mode === "register") {
+      if (u.length < 3) {
+        setError("Username must be at least 3 characters.");
+        return;
+      }
+      if (password.length < 8) {
+        setError("Password must be at least 8 characters.");
+        return;
+      }
+      if (password !== confirm) {
+        setError("Passwords do not match.");
+        return;
+      }
     }
     setBusy(true);
     try {
@@ -419,7 +430,7 @@ function AuthScreen({ onAuthed }: { onAuthed: (user: AuthUser) => void }) {
 
         {error && <div className="error">{error}</div>}
 
-        <form onSubmit={submit} className="auth-form">
+        <form onSubmit={submit} className="auth-form" noValidate>
           <label>
             Username
             <input
