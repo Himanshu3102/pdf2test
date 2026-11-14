@@ -1,9 +1,9 @@
 import os
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 
-from app.db import get_db
+from app.db import get_db, SessionLocal
 from app.config import settings
 from app.models import Exam, Question, User
 from app.schemas import (
@@ -62,6 +62,7 @@ async def upload_exam(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    background_tasks: BackgroundTasks = None,
 ):
     # size check
     data = await file.read()
@@ -70,71 +71,98 @@ async def upload_exam(
         raise HTTPException(status_code=413, detail=f"File exceeds {settings.MAX_UPLOAD_MB}MB limit.")
     if not storage.validate_pdf_bytes(data):
         raise HTTPException(status_code=400, detail="Invalid PDF file (bad signature).")
-    if file.filename and not file.filename.lower().endswith(".pdf"):
-        # still allow if signature valid, but warn
-        pass
 
     storage_name = storage.save_upload(data, file.filename or "upload.pdf")
-    path = storage.get_upload_path(storage_name)
 
-    # extract
-    extraction = pdf_extraction.extract_text(path, ocr_enabled=settings.OCR_ENABLED)
-    text = pdf_extraction.extraction_to_text(extraction)
-
-    # parse
-    if extraction.used_ocr:
-        try:
-            parsed = parse_pdf_with_vision(path)
-            parse_warnings = ["Parsed from scanned PDF via Gemini vision."]
-        except Exception as e:
-            parsed = heuristic_parse(text)
-            parse_warnings = [f"Vision parse failed: {e}; falling back to local OCR heuristic."]
-    else:
-        parsed, parse_warnings = parse_text(text)
-    warnings = list(dict.fromkeys(list(extraction.warnings) + list(parse_warnings) + (parsed.warnings or [])))
-
-    # create exam
+    # Create exam immediately; process extraction in the background so the
+    # request does not time out on free hosting tiers.
     exam = Exam(
-        title=parsed.title or "Untitled Exam",
-        instructions=parsed.instructions,
+        title="Processing...",
+        instructions=None,
         source_filename=file.filename,
         source_storage_name=storage_name,
-        status="draft",
+        status="processing",
         settings=ExamSettings().model_dump(),
         settings_confirmed=False,
         owner_id=user.id,
     )
     db.add(exam)
-    db.flush()
-
-    # create questions
-    for idx, pq in enumerate(parsed.questions):
-        q = Question(
-            exam_id=exam.id,
-            order_index=idx,
-            qtype=pq.qtype,
-            prompt=pq.prompt,
-            options=[o.model_dump() for o in pq.options],
-            answer_key=pq.answer_key,
-            explanation=pq.explanation,
-            points=pq.points if pq.points is not None else settings.DEFAULT_CORRECT_POINTS,
-            negative_points=pq.negative_points if pq.negative_points is not None else settings.DEFAULT_INCORRECT_POINTS,
-            tolerance=pq.tolerance,
-            topic_tags=pq.topic_tags or [],
-            source_page=pq.source_page,
-            parse_confidence=pq.confidence,
-            review_status="needs_review",
-        )
-        db.add(q)
     db.commit()
     db.refresh(exam)
+
+    if background_tasks is not None:
+        background_tasks.add_task(_process_upload, exam.id, storage_name)
+    else:
+        _process_upload(exam.id, storage_name)
 
     return UploadResponse(
         exam_id=exam.id,
         status=exam.status,
-        warnings=warnings,
+        warnings=[],
         exam=_exam_to_authoring(exam),
     )
+
+
+def _process_upload(exam_id: str, storage_name: str) -> None:
+    db = SessionLocal()
+    try:
+        exam = db.get(Exam, exam_id)
+        if exam is None:
+            return
+        path = storage.get_upload_path(storage_name)
+        extraction = pdf_extraction.extract_text(path, ocr_enabled=settings.OCR_ENABLED)
+        text = pdf_extraction.extraction_to_text(extraction)
+
+        if extraction.used_ocr:
+            try:
+                parsed = parse_pdf_with_vision(path)
+                parse_warnings = ["Parsed from scanned PDF via Gemini vision."]
+            except Exception as e:
+                parsed = heuristic_parse(text)
+                parse_warnings = [f"Vision parse failed: {e}; falling back to local OCR heuristic."]
+        else:
+            parsed, parse_warnings = parse_text(text)
+
+        warnings = list(dict.fromkeys(list(extraction.warnings) + list(parse_warnings) + (parsed.warnings or [])))
+
+        exam.title = parsed.title or "Untitled Exam"
+        exam.instructions = parsed.instructions
+        exam.status = "draft"
+        # replace any existing questions
+        for q in list(exam.questions):
+            db.delete(q)
+        db.flush()
+        for idx, pq in enumerate(parsed.questions):
+            q = Question(
+                exam_id=exam.id,
+                order_index=idx,
+                qtype=pq.qtype,
+                prompt=pq.prompt,
+                options=[o.model_dump() for o in pq.options],
+                answer_key=pq.answer_key,
+                explanation=pq.explanation,
+                points=pq.points if pq.points is not None else settings.DEFAULT_CORRECT_POINTS,
+                negative_points=pq.negative_points if pq.negative_points is not None else settings.DEFAULT_INCORRECT_POINTS,
+                tolerance=pq.tolerance,
+                topic_tags=pq.topic_tags or [],
+                source_page=pq.source_page,
+                parse_confidence=pq.confidence,
+                review_status="needs_review",
+            )
+            db.add(q)
+        db.commit()
+    except Exception as e:
+        try:
+            exam = db.get(Exam, exam_id)
+            if exam is not None:
+                exam.status = "failed"
+                exam.title = "Processing failed"
+                exam.instructions = str(e)
+                db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
 
 
 @router.get("/exams/{exam_id}", response_model=ExamAuthoring)

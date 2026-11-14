@@ -9,6 +9,14 @@ def test_upload_valid_pdf(client):
     assert r.status_code == 200, r.text
     body = r.json()
     assert "exam_id" in body
+    # Processing happens in the background; wait for it to finish.
+    import time
+    for _ in range(60):
+        r2 = client.get(f"/api/v1/exams/{body['exam_id']}")
+        if r2.json()["status"] != "processing":
+            body["exam"] = r2.json()
+            break
+        time.sleep(0.5)
     assert body["exam"]["status"] == "draft"
 
 

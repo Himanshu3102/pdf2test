@@ -6,7 +6,15 @@ def _create_exam(client):
     files = {"file": ("sample.pdf", data, "application/pdf")}
     r = client.post("/api/v1/exams/upload", files=files)
     assert r.status_code == 200
-    return r.json()["exam_id"]
+    exam_id = r.json()["exam_id"]
+    # wait for background processing
+    import time
+    for _ in range(60):
+        rr = client.get(f"/api/v1/exams/{exam_id}")
+        if rr.json()["status"] != "processing":
+            break
+        time.sleep(0.5)
+    return exam_id
 
 
 def test_full_flow_and_no_leak(client):

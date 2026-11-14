@@ -174,7 +174,18 @@ export default function App() {
       setError(null);
       setParseWarnings([]);
       const data = await uploadPdf(file);
-      setExam(data.exam);
+      let exam = data.exam;
+      // Poll while the backend processes (OCR/vision) in the background.
+      while (exam.status === "processing") {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const refreshed = await api(`/exams/${exam.id}`);
+        exam = refreshed;
+      }
+      if (exam.status === "failed") {
+        setError(exam.instructions || "Processing failed.");
+        return;
+      }
+      setExam(exam);
       setParseWarnings(data.warnings || []);
       setScreen("review");
     } catch (e: any) {
