@@ -1,0 +1,12 @@
+version: "3.9"
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///./data/exam_app.db
+      - STORAGE_DIR=./data/uploads
+      - CORS_ORIGINS=http://localhost:5173
+    volumes:
+      - ./data:/app/data
