@@ -326,7 +326,7 @@ Rules:
 """
 
 
-def _render_page_images(pdf_path: str, max_width: int = 800) -> list[str]:
+def _render_page_images(pdf_path: str, max_width: int = 600) -> list[str]:
     try:
         import fitz
     except Exception as e:

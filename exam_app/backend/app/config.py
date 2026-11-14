@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     AUTH_SECRET_KEY: str = "dev-secret-change-me-in-production"
     AUTH_TOKEN_TTL_DAYS: int = 30
     OCR_ENABLED: bool = True
+    OCR_DPI: int = 150
+    VISION_ENABLED: bool = True
     DEFAULT_CORRECT_POINTS: float = 4.0
     DEFAULT_INCORRECT_POINTS: float = -1.0
     DEFAULT_UNANSWERED_POINTS: float = 0.0

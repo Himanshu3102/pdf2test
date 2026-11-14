@@ -1,6 +1,7 @@
 import os
 import tempfile
 from dataclasses import dataclass
+from app.config import settings
 
 try:
     import fitz  # PyMuPDF
@@ -96,7 +97,7 @@ def extract_text(pdf_path: str, ocr_enabled: bool = True) -> ExtractionResult:
                     for pt in pages:
                         try:
                             page = doc[pt.page - 1]
-                            pix = page.get_pixmap(dpi=150)
+                            pix = page.get_pixmap(dpi=settings.OCR_DPI if hasattr(settings, 'OCR_DPI') else 150)
                             tmp_path = os.path.join(tempfile.gettempdir(), f"rapidocr_page_{pt.page}.png")
                             pix.save(tmp_path)
                             result, _ = engine(tmp_path)

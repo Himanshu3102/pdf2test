@@ -113,7 +113,7 @@ def _process_upload(exam_id: str, storage_name: str) -> None:
         extraction = pdf_extraction.extract_text(path, ocr_enabled=settings.OCR_ENABLED)
         text = pdf_extraction.extraction_to_text(extraction)
 
-        if extraction.used_ocr:
+        if extraction.used_ocr and settings.VISION_ENABLED:
             try:
                 parsed = parse_pdf_with_vision(path)
                 parse_warnings = ["Parsed from scanned PDF via Gemini vision."]

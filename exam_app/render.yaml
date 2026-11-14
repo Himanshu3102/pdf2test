@@ -21,7 +21,9 @@ services:
         value: gemini-3.1-flash-lite
       - key: MAX_UPLOAD_MB
         value: 25
-      - key: OCR_ENABLED
+      - key: OCR_DPI
+        value: 100
+      - key: VISION_ENABLED
         value: true
       - key: R2_ACCOUNT_ID
         sync: false
