@@ -523,10 +523,29 @@ button.gate-section:hover:not(.active) {
   background: #e9edf3;
 }
 
-.save-status {
-  font-size: 12px;
-  color: #4c7a26;
-  min-height: 16px;
+.feedback {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border-radius: 6px;
+  border: 1px solid #dbe3ec;
+  background: #f3f7fc;
+}
+
+.feedback.correct {
+  border-color: #bfe2ca;
+  background: #e5f4ea;
+  color: #23703b;
+}
+
+.feedback.incorrect {
+  border-color: #f2b8b8;
+  background: #fdecec;
+  color: #9a1a1a;
+}
+
+.feedback p {
+  margin: 8px 0 0;
+  line-height: 1.6;
 }
 
 .save-status.save-failed {

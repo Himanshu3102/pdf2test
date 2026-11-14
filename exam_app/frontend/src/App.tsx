@@ -843,6 +843,7 @@ function RunnerScreen({
   const [marked, setMarked] = useState<Record<string, boolean>>({});
   const [visited, setVisited] = useState<Record<string, boolean>>({});
   const [remaining, setRemaining] = useState<number | null>(null);
+  const [feedback, setFeedback] = useState<any>(null);
   const [saveStatus, setSaveStatus] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showInstructions, setShowInstructions] = useState(false);
@@ -892,6 +893,7 @@ function RunnerScreen({
     if (currentId) {
       setVisited((v) => (v[currentId] ? v : { ...v, [currentId]: true }));
     }
+    setFeedback(null);
     visitStart.current = Date.now();
   }, [attempt, index]);
 
@@ -911,12 +913,14 @@ function RunnerScreen({
 
   async function saveAnswer(qid: string, response: any, mark?: boolean) {
     setSaveStatus("Saving...");
+    setFeedback(null);
     try {
-      await api(`/attempts/${attemptId}/answers/${qid}`, {
+      const res = await api(`/attempts/${attemptId}/answers/${qid}`, {
         method: "PUT",
         body: JSON.stringify({ response, marked_for_review: mark }),
       });
       setSaveStatus("Saved");
+      if (res?.feedback) setFeedback(res.feedback);
       setTimeout(() => setSaveStatus(""), 1500);
     } catch {
       setSaveStatus("Save failed");
@@ -1111,6 +1115,18 @@ function RunnerScreen({
               </div>
             )}
           </div>
+
+          {feedback && (
+            <div className={`feedback ${feedback.correct ? "correct" : "incorrect"}`}>
+              <strong>{feedback.correct ? "Correct" : "Incorrect"}</strong>
+              {feedback.awarded_points !== undefined && <span> — {feedback.awarded_points} points</span>}
+              {feedback.explanation && (
+                <p>
+                  <MathText text={feedback.explanation} />
+                </p>
+              )}
+            </div>
+          )}
 
           <div className="gate-left-actions">
             <button
