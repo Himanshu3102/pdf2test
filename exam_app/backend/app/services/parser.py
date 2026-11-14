@@ -26,7 +26,8 @@ Your job: extract the questions into structured JSON. Rules:
       "points": number or null,
       "negative_points": number or null,
       "tolerance": number or null,
-      "topic_tags": [string],  # only if the PDF explicitly shows section headings; otherwise []
+      "topic_tags": [string],  # 1-3 specific subtopics (e.g. "Eigenvalues", "Eigenvectors")
+      "section": string or null,  # only if the PDF explicitly shows section headings
       "source_page": number or null,
       "confidence": number (0-1),
       "warnings": [string]
@@ -296,7 +297,8 @@ Rules:
 - Do NOT invent questions, options, answers, or explanations.
 - Read equations, matrices, fractions, and multi-column layouts carefully.
 - Use LaTeX for math in prompts, options, and explanations (inline $...$, block $$...$$).
-- Set topic_tags to [] unless the PDF explicitly shows section headings for those questions.
+- Set topic_tags to 1-3 specific subtopics (e.g. "Eigenvalues", "Eigenvectors", "Matrices") for analysis.
+- Set section only if the PDF explicitly shows section headings; otherwise null.
 - Return valid JSON: escape every backslash in LaTeX as \\\\ (for example write \\\\begin{bmatrix} not \\begin{bmatrix}).
 - If an answer key or solutions are visible, include answer_key and explanation for that question.
 - Return ONLY a JSON object:
@@ -314,7 +316,8 @@ Rules:
       "points": number or null,
       "negative_points": number or null,
       "tolerance": number or null,
-      "topic_tags": [string],  # only if the PDF explicitly shows section headings; otherwise []
+      "topic_tags": [string],  # specific subtopics for analysis
+      "section": string or null,  # only if the PDF explicitly shows section headings
       "confidence": number (0-1),
       "warnings": [string]
     }

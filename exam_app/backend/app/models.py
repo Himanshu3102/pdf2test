@@ -59,6 +59,7 @@ class Question(Base):
     negative_points: Mapped[float] = mapped_column(Float, default=0.0)
     tolerance: Mapped[float | None] = mapped_column(Float, nullable=True)
     topic_tags: Mapped[list] = mapped_column(JSON, default=list)
+    section: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     parse_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     review_status: Mapped[str] = mapped_column(String(32), default="needs_review")

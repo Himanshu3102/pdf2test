@@ -34,6 +34,7 @@ def _question_taking(q: Question) -> QuestionTaking:
         points=q.points,
         negative_points=q.negative_points,
         topic_tags=q.topic_tags or [],
+        section=q.section,
         source_page=q.source_page,
     )
 
@@ -287,6 +288,7 @@ def get_results(attempt_id: str, db: Session = Depends(get_db), user: User = Dep
             is_correct=aa.is_correct if aa else None,
             user_response=aa.response if aa else None,
             topic_tags=q.topic_tags or [],
+            section=q.section,
             source_page=q.source_page,
             time_spent_seconds=aa.time_spent_seconds if aa else 0.0,
         ))

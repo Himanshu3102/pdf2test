@@ -29,6 +29,7 @@ class QuestionAuthoring(BaseModel):
     negative_points: float = 0.0
     tolerance: float | None = None
     topic_tags: list[str] = []
+    section: str | None = None
     source_page: int | None = None
     parse_confidence: float | None = None
     review_status: str = "needs_review"
@@ -44,6 +45,7 @@ class QuestionTaking(BaseModel):
     points: float = 4.0
     negative_points: float = 0.0
     topic_tags: list[str] = []
+    section: str | None = None
     source_page: int | None = None
 
 
@@ -61,6 +63,7 @@ class QuestionReview(BaseModel):
     is_correct: bool | None = None
     user_response: Any = None
     topic_tags: list[str] = []
+    section: str | None = None
     source_page: int | None = None
     time_spent_seconds: float = 0.0
 
@@ -118,6 +121,7 @@ class QuestionCreate(BaseModel):
     negative_points: float = 0.0
     tolerance: float | None = None
     topic_tags: list[str] = []
+    section: str | None = None
     source_page: int | None = None
 
 
@@ -137,6 +141,7 @@ class ParsedQuestion(BaseModel):
     negative_points: float | None = None
     tolerance: float | None = None
     topic_tags: list[str] = []
+    section: str | None = None
     source_page: int | None = None
     confidence: float = 0.5
     warnings: list[str] = []

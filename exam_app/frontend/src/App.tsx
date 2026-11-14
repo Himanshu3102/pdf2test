@@ -990,9 +990,9 @@ function RunnerScreen({
           Math.floor((remaining % 3600) / 60)
         ).padStart(2, "0")}:${String(remaining % 60).padStart(2, "0")}`;
 
-  const sectionName = q.topic_tags?.[0] || "General Aptitude";
+  const sectionName = q.section || "General";
   const sections: string[] = Array.from(
-    new Set(questions.map((qq: any) => qq.topic_tags?.[0] || "General Aptitude"))
+    new Set(questions.map((qq: any) => qq.section).filter(Boolean))
   );
   const hasSections = sections.length > 1;
   const questionTypeLabel =
@@ -1049,7 +1049,7 @@ function RunnerScreen({
                   className={s === sectionName ? "gate-section active" : "gate-section"}
                   onClick={() => {
                     const firstIdx = questions.findIndex(
-                      (qq: any) => (qq.topic_tags?.[0] || "General Aptitude") === s
+                      (qq: any) => (qq.section || "General") === s
                     );
                     if (firstIdx >= 0) {
                       recordVisit(qid);
@@ -1256,6 +1256,32 @@ function RunnerScreen({
 /* ------------------------------------------------------------------ */
 
 function ResultsScreen({ results, onBack }: { results: any; onBack: () => void }) {
+  const topics = useMemo(() => {
+    const map = new Map<string, { name: string; total: number; correct: number; incorrect: number; unanswered: number; score: number; max: number; time: number }>();
+    for (const q of results.questions || []) {
+      const tag = (q.topic_tags && q.topic_tags[0]) || "General";
+      if (!map.has(tag)) map.set(tag, { name: tag, total: 0, correct: 0, incorrect: 0, unanswered: 0, score: 0, max: 0, time: 0 });
+      const t = map.get(tag)!;
+      t.total += 1;
+      t.max += q.points || 0;
+      t.score += q.awarded_points || 0;
+      t.time += q.time_spent_seconds || 0;
+      if (q.user_response === null || q.user_response === undefined || q.user_response === "" || (Array.isArray(q.user_response) && q.user_response.length === 0)) {
+        t.unanswered += 1;
+      } else if (q.is_correct) {
+        t.correct += 1;
+      } else {
+        t.incorrect += 1;
+      }
+    }
+    return Array.from(map.values())
+      .map((t) => ({ ...t, pct: t.max ? Math.round((t.score / t.max) * 100) : 0 }))
+      .sort((a, b) => b.pct - a.pct);
+  }, [results]);
+
+  const strongest = topics.length ? topics[0] : null;
+  const weakest = topics.length > 1 ? topics[topics.length - 1] : null;
+
   return (
     <div className="card">
       <button className="ghost" onClick={onBack}>
@@ -1293,6 +1319,74 @@ function ResultsScreen({ results, onBack }: { results: any; onBack: () => void }
           <strong>{Math.round(results.total_time_seconds)}s</strong>
         </div>
       </div>
+      <h3>Topic Analysis</h3>
+      {topics.length > 0 && (
+        <div className="topic-analysis">
+          <div className="topic-summary">
+            {strongest && (
+              <div className="topic-highlight strong">
+                <span>Strongest</span>
+                <strong>{strongest.name}</strong>
+                <em>{strongest.pct}%</em>
+              </div>
+            )}
+            {weakest && weakest.name !== strongest?.name && (
+              <div className="topic-highlight weak">
+                <span>Needs work</span>
+                <strong>{weakest.name}</strong>
+                <em>{weakest.pct}%</em>
+              </div>
+            )}
+          </div>
+          <div className="topic-bars">
+            {topics.map((t) => (
+              <div className="topic-bar-row" key={t.name}>
+                <div className="topic-bar-label">{t.name}</div>
+                <div className="topic-bar-track">
+                  <div
+                    className={`topic-bar-fill ${t.pct >= 70 ? "good" : t.pct >= 40 ? "mid" : "bad"}`}
+                    style={{ width: `${Math.max(4, t.pct)}%` }}
+                  />
+                </div>
+                <div className="topic-bar-stats">
+                  {t.correct}/{t.total} · {t.score}/{t.max} pts · {t.pct}%
+                </div>
+              </div>
+            ))}
+          </div>
+          <table className="topic-table">
+            <thead>
+              <tr>
+                <th>Topic</th>
+                <th>Qs</th>
+                <th>Correct</th>
+                <th>Incorrect</th>
+                <th>Unanswered</th>
+                <th>Score</th>
+                <th>Max</th>
+                <th>%</th>
+                <th>Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {topics.map((t) => (
+                <tr key={t.name}>
+                  <td>{t.name}</td>
+                  <td>{t.total}</td>
+                  <td>{t.correct}</td>
+                  <td>{t.incorrect}</td>
+                  <td>{t.unanswered}</td>
+                  <td>{t.score}</td>
+                  <td>{t.max}</td>
+                  <td>{t.pct}%</td>
+                  <td>{Math.round(t.time)}s</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       <h3>Review</h3>
       {results.questions.map((q: any, i: number) => (
         <div key={q.id} className="qcard">
