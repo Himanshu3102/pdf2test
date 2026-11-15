@@ -1,4 +1,6 @@
 import os
+import time
+import logging
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, BackgroundTasks
 from sqlalchemy.orm import Session
@@ -14,6 +16,9 @@ from app.security import get_current_user, get_owned_exam
 from app.services import storage, pdf_extraction
 from app.services.parser import parse_text, heuristic_parse, parse_pdf_with_vision
 from app.services.llm import LLMError
+from app.logging_config import get_logger, log_event
+
+logger = get_logger("exams")
 
 router = APIRouter()
 
@@ -65,7 +70,7 @@ async def upload_exam(
     user: User = Depends(get_current_user),
     background_tasks: BackgroundTasks = None,
 ):
-    # size check
+    t_start = time.perf_counter()
     data = await file.read()
     max_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
     if len(data) > max_bytes:
@@ -75,8 +80,6 @@ async def upload_exam(
 
     storage_name = storage.save_upload(data, file.filename or "upload.pdf")
 
-    # Create exam immediately; process extraction in the background so the
-    # request does not time out on free hosting tiers.
     exam = Exam(
         title="Processing...",
         instructions=None,
@@ -96,6 +99,9 @@ async def upload_exam(
     else:
         _process_upload(exam.id, storage_name)
 
+    elapsed = round((time.perf_counter() - t_start) * 1000, 1)
+    log_event(logger, "upload_accepted", exam_id=exam.id, file_size=len(data), user_id=user.id, duration_ms=elapsed)
+
     return UploadResponse(
         exam_id=exam.id,
         status=exam.status,
@@ -106,30 +112,38 @@ async def upload_exam(
 
 def _process_upload(exam_id: str, storage_name: str) -> None:
     db = SessionLocal()
+    t_start = time.perf_counter()
     try:
         exam = db.get(Exam, exam_id)
         if exam is None:
             return
         path = storage.get_upload_path(storage_name)
+
+        t0 = time.perf_counter()
         extraction = pdf_extraction.extract_text(path, ocr_enabled=settings.OCR_ENABLED)
         text = pdf_extraction.extraction_to_text(extraction)
+        t_extract = round((time.perf_counter() - t0) * 1000, 1)
 
         if extraction.used_ocr and settings.VISION_ENABLED:
             try:
+                t0 = time.perf_counter()
                 parsed = parse_pdf_with_vision(path)
                 parse_warnings = ["Parsed from scanned PDF via Gemini vision."]
+                t_parse = round((time.perf_counter() - t0) * 1000, 1)
             except Exception as e:
                 parsed = heuristic_parse(text)
                 parse_warnings = [f"Vision parse failed: {e}; falling back to local OCR heuristic."]
+                t_parse = round((time.perf_counter() - t0) * 1000, 1)
         else:
+            t0 = time.perf_counter()
             parsed, parse_warnings = parse_text(text)
+            t_parse = round((time.perf_counter() - t0) * 1000, 1)
 
         warnings = list(dict.fromkeys(list(extraction.warnings) + list(parse_warnings) + (parsed.warnings or [])))
 
         exam.title = parsed.title or "Untitled Exam"
         exam.instructions = parsed.instructions
         exam.status = "draft"
-        # replace any existing questions
         for q in list(exam.questions):
             db.delete(q)
         db.flush()
@@ -153,6 +167,12 @@ def _process_upload(exam_id: str, storage_name: str) -> None:
             )
             db.add(q)
         db.commit()
+
+        elapsed = round((time.perf_counter() - t_start) * 1000, 1)
+        log_event(logger, "upload_processed", exam_id=exam.id, status="draft",
+                    question_count=len(parsed.questions), used_ocr=extraction.used_ocr,
+                    extract_ms=t_extract, parse_ms=t_parse, total_ms=elapsed,
+                    warnings=warnings)
     except Exception as e:
         try:
             exam = db.get(Exam, exam_id)
@@ -163,6 +183,7 @@ def _process_upload(exam_id: str, storage_name: str) -> None:
                 db.commit()
         except Exception:
             pass
+        log_event(logger, "upload_failed", level=logging.ERROR, exam_id=exam_id, error=str(e))
     finally:
         db.close()
 
@@ -181,7 +202,6 @@ def update_exam(
 ):
     exam = get_owned_exam(exam_id, user, db)
     if exam.status not in ("draft",):
-        # allow settings edits only draft; but allow? keep draft-only for questions
         pass
 
     if payload.title is not None:
@@ -193,7 +213,6 @@ def update_exam(
     if payload.settings_confirmed is not None:
         exam.settings_confirmed = payload.settings_confirmed
     if payload.questions is not None:
-        # replace all
         for q in list(exam.questions):
             db.delete(q)
         db.flush()
@@ -208,10 +227,11 @@ def update_exam(
                 options=[o.model_dump() for o in qd.options],
                 answer_key=qd.answer_key,
                 explanation=qd.explanation,
-                points=qd.points,
-                negative_points=qd.negative_points,
+                points=qd.points if qd.points is not None else settings.DEFAULT_CORRECT_POINTS,
+                negative_points=qd.negative_points if qd.negative_points is not None else settings.DEFAULT_INCORRECT_POINTS,
                 tolerance=qd.tolerance,
                 topic_tags=qd.topic_tags or [],
+                section=qd.section,
                 source_page=qd.source_page,
                 parse_confidence=qd.parse_confidence,
                 review_status=qd.review_status,
@@ -226,14 +246,14 @@ def update_exam(
 def publish_exam(exam_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     exam = get_owned_exam(exam_id, user, db)
     if exam.status != "draft":
-        raise HTTPException(status_code=400, detail="Only draft exams can be published.")
+        raise HTTPException(status_code=400, detail="Exam is not in draft state.")
     if not exam.settings_confirmed:
         raise HTTPException(status_code=400, detail="Settings must be confirmed before publishing.")
-    if not exam.questions:
-        raise HTTPException(status_code=400, detail="Exam has no questions.")
-    # validate answer keys? warn only
+    if len(exam.questions) == 0:
+        raise HTTPException(status_code=400, detail="Cannot publish an exam with no questions.")
     exam.status = "published"
     db.commit()
+    db.refresh(exam)
     return {"exam_id": exam.id, "status": exam.status}
 
 
@@ -258,7 +278,6 @@ def list_attempts(exam_id: str, db: Session = Depends(get_db), user: User = Depe
 
 @router.get("/me/exams", response_model=list[ExamHistory])
 def my_exams(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Every exam owned by the current user, with a compact attempt history."""
     from app.models import Attempt
     exams = (
         db.query(Exam)

@@ -1,7 +1,12 @@
 import json
 import re
+import time
+import logging
 import httpx
 from app.config import settings
+from app.logging_config import get_logger, log_event
+
+logger = get_logger("llm")
 
 
 class LLMError(Exception):
@@ -34,9 +39,21 @@ def chat_completion(messages: list[dict], max_tokens: int | None = None, json_mo
         raise LLMError("LLM provider not configured (missing API key).")
     max_tok = max_tokens or settings.LLM_MAX_OUTPUT_TOKENS
     to = timeout or settings.LLM_TIMEOUT_SECONDS
-    if _is_anthropic(base_url):
-        return _anthropic_completion(key, base_url, model, messages, max_tok, json_mode, temperature, to)
-    return _openai_completion(key, base_url, model, messages, max_tok, json_mode, temperature, to)
+    t0 = time.perf_counter()
+    try:
+        if _is_anthropic(base_url):
+            result = _anthropic_completion(key, base_url, model, messages, max_tok, json_mode, temperature, to)
+        else:
+            result = _openai_completion(key, base_url, model, messages, max_tok, json_mode, temperature, to)
+        elapsed = round((time.perf_counter() - t0) * 1000, 1)
+        log_event(logger, "llm_call", provider=base_url, model=model, max_tokens=max_tok,
+                    input_chars=sum(len(str(m.get("content", ""))) for m in messages),
+                    output_chars=len(result), latency_ms=elapsed, success=True)
+        return result
+    except Exception as e:
+        elapsed = round((time.perf_counter() - t0) * 1000, 1)
+        log_event(logger, "llm_call", level=logging.ERROR, provider=base_url, model=model, latency_ms=elapsed, success=False, error=str(e))
+        raise
 
 
 def _openai_completion(key, base_url, model, messages, max_tok, json_mode, temperature, timeout):

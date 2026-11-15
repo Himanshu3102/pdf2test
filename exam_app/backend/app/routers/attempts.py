@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import time
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -9,6 +10,10 @@ from app.schemas import (
     TimingEventRequest, SubmitResponse, ResultsResponse, QuestionTaking, QuestionReview, ExamTakingMeta, ExamSettings,
 )
 from app.security import get_current_user
+from app.logging_config import get_logger, log_event
+import logging
+
+logger = get_logger("attempts")
 from app.services.scoring import compute_results, grade_question
 from app.services.timer import (
     compute_deadline, is_expired, time_remaining_seconds, cap_visit_intervals, intervals_to_seconds, now_utc, ensure_aware,
@@ -81,7 +86,11 @@ def start_attempt(exam_id: str, db: Session, user: User) -> tuple[Attempt, Exam]
 
 @router.post("/exams/{exam_id}/attempts", response_model=AttemptStartResponse)
 def create_attempt(exam_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    t0 = time.perf_counter()
     attempt, exam = start_attempt(exam_id, db, user)
+    elapsed = round((time.perf_counter() - t0) * 1000, 1)
+    log_event(logger, "attempt_start", attempt_id=attempt.id, exam_id=exam_id, user_id=user.id, duration_ms=elapsed)
+    # build response (existing code follows)
     settings = _settings_dict(exam)
     # build answers map
     answers = {}
@@ -205,9 +214,10 @@ def record_event(
 
 @router.post("/attempts/{attempt_id}/submit", response_model=SubmitResponse)
 def submit_attempt(attempt_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    t0 = time.perf_counter()
     attempt, exam = _owned_attempt(attempt_id, user, db)
     if attempt.status != "in_progress":
-        # already submitted; return existing
+        log_event(logger, "attempt_submit_duplicate", attempt_id=attempt_id, user_id=user.id)
         return SubmitResponse(
             attempt_id=attempt.id,
             status=attempt.status,
@@ -218,6 +228,9 @@ def submit_attempt(attempt_id: str, db: Session = Depends(get_db), user: User = 
         )
     expired = is_expired(attempt.deadline)
     _submit_attempt(attempt, exam, db, expired=expired)
+    elapsed = round((time.perf_counter() - t0) * 1000, 1)
+    log_event(logger, "attempt_submit", attempt_id=attempt_id, exam_id=exam.id, user_id=user.id,
+                score=attempt.score, percentage=attempt.percentage, expired=expired, duration_ms=elapsed)
     return SubmitResponse(
         attempt_id=attempt.id,
         status=attempt.status,

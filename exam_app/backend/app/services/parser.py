@@ -295,10 +295,13 @@ VISION_PARSE_SYSTEM = """You are an exam question extraction assistant. You rece
 
 Rules:
 - Do NOT invent questions, options, answers, or explanations.
+- Only extract questions that are explicitly numbered (Q1, Q2, ...). Do not create questions from solution or hint text.
+- For every question, extract ALL options (A, B, C, D, ...) if present. Never omit options.
 - Read equations, matrices, fractions, and multi-column layouts carefully.
 - Use LaTeX for math in prompts, options, and explanations (inline $...$, block $$...$$).
 - Set topic_tags to 1-3 specific subtopics (e.g. "Eigenvalues", "Eigenvectors", "Matrices") for analysis.
 - Set section only if the PDF explicitly shows section headings; otherwise null.
+- Set answer_key only if an answer key is visible; otherwise null.
 - Return valid JSON: escape every backslash in LaTeX as \\\\ (for example write \\\\begin{bmatrix} not \\begin{bmatrix}).
 - If an answer key or solutions are visible, include answer_key and explanation for that question.
 - Return ONLY a JSON object:
@@ -371,7 +374,7 @@ def parse_pdf_with_vision(pdf_path: str) -> ParsedExam:
             {"role": "user", "content": content},
         ]
         from app.config import settings
-        data = chat_json(messages, max_tokens=min(settings.LLM_MAX_OUTPUT_TOKENS, 8192), timeout=120)
+        data = chat_json(messages, max_tokens=min(settings.LLM_MAX_OUTPUT_TOKENS, 8192), timeout=300)
         if isinstance(data, dict):
             if title is None:
                 title = data.get("title")
@@ -404,8 +407,29 @@ def parse_pdf_with_vision(pdf_path: str) -> ParsedExam:
             merged[num] = q
         unnumbered = []
 
-    ordered = [merged[n] for n in sorted(merged)]
-    question_numbers = list(sorted(merged))
+    ordered = [merged[n] for n in sorted(merged)] + unnumbered
+    question_numbers = list(sorted(merged)) + [None] * len(unnumbered)
+
+    # If the PDF has text-based Q anchors, only keep those (avoids solution-text hallucinations).
+    allowed_numbers: set[int] = set()
+    try:
+        from app.services import pdf_extraction
+        ext = pdf_extraction.extract_text(pdf_path, ocr_enabled=False)
+        txt = pdf_extraction.extraction_to_text(ext)
+        allowed_numbers = {int(x) for x in __import__("re").findall(r"Q\s*(\d+)", txt, __import__("re").I)}
+    except Exception:
+        allowed_numbers = set()
+
+    if allowed_numbers:
+        filtered = []
+        filtered_nums = []
+        for q, num in zip(ordered, question_numbers):
+            if isinstance(num, int) and num in allowed_numbers:
+                filtered.append(q)
+                filtered_nums.append(num)
+        if filtered:
+            ordered = filtered
+            question_numbers = filtered_nums
 
     # Deduplicate by normalized prompt (keeps the richer entry).
     seen_prompts: set[str] = set()
