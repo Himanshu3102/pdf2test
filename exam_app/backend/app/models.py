@@ -25,6 +25,7 @@ class Exam(Base):
     status: Mapped[str] = mapped_column(String(32), default="draft")  # draft/published/archived
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
     settings_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    owner_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     gate_branch: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
     gate_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gate_paper_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("gate_papers.id", ondelete="SET NULL"), nullable=True)
