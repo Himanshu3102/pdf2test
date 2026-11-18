@@ -1343,6 +1343,11 @@ function GatePapersScreen({ onBack, onStartExam }: { onBack: () => void; onStart
                   </div>
                 </div>
                 <div className="exam-actions">
+                  {p.source_url && (
+                    <a className="ghost" href={p.source_url} target="_blank" rel="noopener noreferrer" style={{ marginRight: 8 }}>
+                      Download PDF
+                    </a>
+                  )}
                   {p.exam_id && (
                     <button className="primary" onClick={() => onStartExam(p.exam_id)}>
                       Start test
