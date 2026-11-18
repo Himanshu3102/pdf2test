@@ -243,7 +243,34 @@ def _parse_q_style(text: str) -> ParsedExam | None:
     return ParsedExam(title=title, instructions=None, questions=parsed_qs, warnings=[])
 
 
-def heuristic_parse(text: str) -> ParsedExam:
+def extract_answer_key(text: str) -> dict[int, str]:
+    """Extract answer key from ExamGOAL-style PDFs.
+    Format: '1. A', '2. B, C', '3. 95', '4. 4.24 to 4.26'
+    """
+    ak = {}
+    # Find the answer key section
+    ak_start = text.find("Answer Key")
+    if ak_start == -1:
+        return ak
+    ak_text = text[ak_start:]
+    for line in ak_text.split('\n'):
+        m = re.match(r'^\s*(\d+)\.\s*(.+)$', line.strip())
+        if m:
+            qnum = int(m.group(1))
+            ans = m.group(2).strip()
+            if 1 <= qnum <= 200 and ans:
+                ak[qnum] = ans
+    return ak
+
+
+def strip_answer_key_section(text: str) -> str:
+    """Remove the answer key section from the text."""
+    ak_start = text.find("Answer Key")
+    if ak_start == -1:
+        return text
+    # Find the start of the answer key section (look for "Answer Key" heading)
+    # Keep everything before it
+    return text[:ak_start]
     exam = _parse_q_style(text)
     if exam is not None:
         return exam
@@ -280,15 +307,46 @@ def heuristic_parse(text: str) -> ParsedExam:
 
 def parse_text(text: str) -> tuple[ParsedExam, list[str]]:
     warnings: list[str] = []
+    # Extract answer key before stripping
+    ak = extract_answer_key(text)
+    # Strip answer key section from text to avoid parsing it as questions
+    clean_text = strip_answer_key_section(text)
     try:
         if is_configured():
-            exam = parse_with_llm(text)
+            exam = parse_with_llm(clean_text)
+            # Apply answer keys
+            if ak:
+                _apply_answer_keys(exam, ak)
             return exam, warnings
     except Exception as e:
         warnings.append(f"LLM parse failed: {e}; falling back to heuristic.")
-    exam = heuristic_parse(text)
+    exam = heuristic_parse(clean_text)
+    if ak:
+        _apply_answer_keys(exam, ak)
     exam.warnings = (exam.warnings or []) + warnings
     return exam, warnings
+
+
+def _apply_answer_keys(exam: ParsedExam, ak: dict[int, str]) -> None:
+    """Apply extracted answer keys to parsed questions by index."""
+    for i, q in enumerate(exam.questions):
+        qnum = i + 1
+        if qnum in ak:
+            ans = ak[qnum]
+            if ',' in ans and not ans.replace(',', '').replace(' ', '').isdigit():
+                q.answer_key = [a.strip() for a in ans.split(',')]
+                q.qtype = "multiple_select"
+            elif ans.strip('()').replace('.', '').replace(' ', '').isdigit() or '-' in ans and ans.replace('-', '').replace('.', '').isdigit():
+                clean = ans.strip('()').strip()
+                try:
+                    q.answer_key = float(clean)
+                    q.qtype = "numeric"
+                except ValueError:
+                    q.answer_key = clean
+            else:
+                q.answer_key = ans.strip()
+                if q.qtype not in ("multiple_select", "numeric"):
+                    q.qtype = "single_choice"
 
 
 VISION_PARSE_SYSTEM = """You are an exam question extraction assistant. You receive images of pages from a PDF exam paper. Extract every question into structured JSON.
@@ -354,9 +412,29 @@ def _render_page_images(pdf_path: str, max_width: int = 600) -> list[str]:
 def parse_pdf_with_vision(pdf_path: str) -> ParsedExam:
     if not is_configured():
         raise LLMError("LLM not configured")
+    # Detect answer key page and extract answer keys
+    ak = {}
+    try:
+        import fitz
+        doc = fitz.open(pdf_path)
+        ak_page_idx = None
+        for i in range(len(doc)):
+            page_text = doc[i].get_text()
+            if "Answer Key" in page_text and re.search(r'^\s*1\.\s*[A-D]', page_text, re.M):
+                ak_page_idx = i
+                ak = extract_answer_key(page_text)
+                break
+        doc.close()
+    except Exception:
+        pass
+
     images = _render_page_images(pdf_path)
     if not images:
         raise LLMError("No pages rendered")
+
+    # Skip answer key page from question parsing
+    if ak_page_idx is not None and ak_page_idx < len(images):
+        images = [img for i, img in enumerate(images) if i != ak_page_idx]
 
     batch_size = 1
     batches = [images[i:i + batch_size] for i in range(0, len(images), batch_size)]
@@ -381,105 +459,29 @@ def parse_pdf_with_vision(pdf_path: str) -> ParsedExam:
             if instructions is None:
                 instructions = data.get("instructions")
             warnings.extend(data.get("warnings") or [])
-            for q in data.get("questions") or []:
-                all_questions.append(q)
-        time.sleep(1)
+            qs = data.get("questions") or []
+            all_questions.extend(qs)
 
-    merged: dict[int, dict] = {}
-    unnumbered: list[dict] = []
-    for q in all_questions:
-        num = q.get("number")
-        if isinstance(num, int):
-            if num in merged:
-                for k, v in q.items():
-                    if v is not None and merged[num].get(k) is None:
-                        merged[num][k] = v
-            else:
-                merged[num] = dict(q)
-        else:
-            unnumbered.append(q)
+    # Apply answer keys
+    if ak:
+        for i, q in enumerate(all_questions):
+            qnum = i + 1
+            if qnum in ak:
+                ans = ak[qnum]
+                if ',' in ans and not ans.replace(',', '').replace(' ', '').isdigit():
+                    q["answer_key"] = [a.strip() for a in ans.split(',')]
+                    q["qtype"] = "multiple_select"
+                elif ans.strip('()').replace('.', '').replace(' ', '').isdigit():
+                    clean = ans.strip('()').strip()
+                    try:
+                        q["answer_key"] = float(clean)
+                        q["qtype"] = "numeric"
+                    except ValueError:
+                        q["answer_key"] = clean
+                else:
+                    q["answer_key"] = ans.strip()
+                    if q.get("qtype") not in ("multiple_select", "numeric"):
+                        q["qtype"] = "single_choice"
 
-    # Assign missing question numbers to unnumbered questions (in order).
-    if unnumbered:
-        missing = sorted(set(range(1, (max(merged) if merged else 0) + len(unnumbered) + 1)) - set(merged))
-        for q, num in zip(unnumbered, missing):
-            q["number"] = num
-            merged[num] = q
-        unnumbered = []
-
-    ordered = [merged[n] for n in sorted(merged)] + unnumbered
-    question_numbers = list(sorted(merged)) + [None] * len(unnumbered)
-
-    # If the PDF has text-based Q anchors, only keep those (avoids solution-text hallucinations).
-    allowed_numbers: set[int] = set()
-    try:
-        from app.services import pdf_extraction
-        ext = pdf_extraction.extract_text(pdf_path, ocr_enabled=False)
-        txt = pdf_extraction.extraction_to_text(ext)
-        allowed_numbers = {int(x) for x in __import__("re").findall(r"Q\s*(\d+)", txt, __import__("re").I)}
-    except Exception:
-        allowed_numbers = set()
-
-    if allowed_numbers:
-        filtered = []
-        filtered_nums = []
-        for q, num in zip(ordered, question_numbers):
-            if isinstance(num, int) and num in allowed_numbers:
-                filtered.append(q)
-                filtered_nums.append(num)
-        if filtered:
-            ordered = filtered
-            question_numbers = filtered_nums
-
-    # Deduplicate by normalized prompt (keeps the richer entry).
-    seen_prompts: set[str] = set()
-    deduped: list[dict] = []
-    deduped_nums: list[int | None] = []
-    for q, num in zip(ordered, question_numbers):
-        key = re.sub(r"\\s+", " ", str(q.get("prompt", "")).lower()).strip()[:180]
-        if key and key in seen_prompts:
-            continue
-        if key:
-            seen_prompts.add(key)
-        deduped.append(q)
-        deduped_nums.append(num)
-    ordered = deduped
-    question_numbers = deduped_nums
-    parsed_qs = []
-    for q in ordered:
-        q = dict(q)
-        q.pop("number", None)
-        q.setdefault("qtype", "single_choice")
-        q.setdefault("prompt", "")
-        q.setdefault("options", [])
-        q.setdefault("answer_key", None)
-        q.setdefault("explanation", None)
-        q.setdefault("points", None)
-        q.setdefault("negative_points", None)
-        q.setdefault("tolerance", None)
-        q.setdefault("topic_tags", [])
-        q.setdefault("confidence", 0.7)
-        q.setdefault("warnings", [])
-        parsed_qs.append(ParsedQuestion.model_validate(q))
-
-    if not parsed_qs:
-        raise LLMError("Vision parser returned no questions")
-
-    # Supplement answer keys/explanations from OCR text (more reliable for answer keys).
-    try:
-        from app.services import pdf_extraction
-        extraction = pdf_extraction.extract_text(pdf_path, ocr_enabled=True)
-        ocr_text = pdf_extraction.extraction_to_text(extraction)
-        ans_map = _parse_answers(ocr_text)
-        exp_map = _parse_explanations(ocr_text)
-        for q, num in zip(parsed_qs, question_numbers):
-            option_ids = {o.id for o in q.options} if q.options else set()
-            ocr_ans = ans_map.get(num) if isinstance(num, int) else None
-            if ocr_ans is not None and (q.answer_key is None or (isinstance(q.answer_key, str) and q.answer_key not in option_ids and q.answer_key != ocr_ans)):
-                q.answer_key = ocr_ans
-            if q.explanation is None and isinstance(num, int) and num in exp_map:
-                q.explanation = exp_map[num]
-    except Exception:
-        pass
-
-    return ParsedExam(title=title, instructions=instructions, questions=parsed_qs, warnings=warnings)
+    questions = [ParsedQuestion.model_validate(q) for q in all_questions]
+    return ParsedExam(title=title, instructions=instructions, questions=questions, warnings=warnings)
