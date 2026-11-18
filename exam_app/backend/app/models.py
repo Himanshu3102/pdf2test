@@ -154,13 +154,3 @@ class GatePaper(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
     exam: Mapped["Exam | None"] = relationship("Exam")
-    __tablename__ = "chat_messages"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    attempt_id: Mapped[str] = mapped_column(String(36), ForeignKey("attempts.id", ondelete="CASCADE"), index=True)
-    question_id: Mapped[str] = mapped_column(String(36), ForeignKey("questions.id", ondelete="CASCADE"), index=True)
-    role: Mapped[str] = mapped_column(String(32))
-    content: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-    attempt: Mapped["Attempt"] = relationship("Attempt", back_populates="chat_messages")
