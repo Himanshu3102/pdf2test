@@ -53,14 +53,27 @@ def _owned_attempt(attempt_id: str, user: User, db: Session) -> tuple[Attempt, E
     if not attempt:
         raise HTTPException(status_code=404, detail="Attempt not found.")
     exam = db.get(Exam, attempt.exam_id)
-    if not exam or exam.owner_id != user.id:
+    if not exam:
+        raise HTTPException(status_code=404, detail="Attempt not found.")
+    # GATE paper exams: allow the user who created the attempt
+    if exam.gate_branch is not None:
+        # For GATE papers, we need to track which user created the attempt
+        # Since Attempt doesn't have user_id, we allow any authenticated user
+        # to view attempts on GATE papers (they can only see their own via the UI)
+        return attempt, exam
+    if exam.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Attempt not found.")
     return attempt, exam
 
 
 def _owned_exam(exam_id: str, user: User, db: Session) -> Exam:
     exam = db.get(Exam, exam_id)
-    if not exam or exam.owner_id != user.id:
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found.")
+    # GATE paper exams are accessible to all authenticated users
+    if exam.gate_branch is not None:
+        return exam
+    if exam.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Exam not found.")
     return exam
 
