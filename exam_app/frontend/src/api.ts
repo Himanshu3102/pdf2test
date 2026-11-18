@@ -97,6 +97,30 @@ export async function api(path: string, opts: RequestInit = {}) {
   return res.json();
 }
 
+export async function fetchGateBranches() {
+  return api("/gate/branches");
+}
+
+export async function fetchGateSyllabus(branch: string) {
+  return api(`/gate/syllabus/${branch}`);
+}
+
+export async function fetchGatePapers(branch?: string, year?: number) {
+  const params = new URLSearchParams();
+  if (branch) params.set("branch", branch);
+  if (year) params.set("year", String(year));
+  const qs = params.toString();
+  return api(`/gate/papers${qs ? "?" + qs : ""}`);
+}
+
+export async function fetchGateAnalytics(attemptId: string) {
+  return api(`/gate/analytics/${attemptId}`);
+}
+
+export async function seedSyllabus() {
+  return api("/gate/syllabus/seed", { method: "POST" });
+}
+
 export async function uploadPdf(file: File) {
   const fd = new FormData();
   fd.append("file", file);

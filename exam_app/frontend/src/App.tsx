@@ -6,7 +6,7 @@ import { api, clearToken, getToken, setToken, uploadPdf } from "./api";
 import type { AuthUser, ExamHistory } from "./api";
 
 type Exam = any;
-type Screen = "boot" | "auth" | "home" | "upload" | "review" | "runner" | "results";
+type Screen = "boot" | "auth" | "home" | "upload" | "review" | "runner" | "results" | "gate_papers";
 
 function MathText({ text }: { text: string }) {
   const html = useMemo(() => {
@@ -308,6 +308,7 @@ export default function App() {
           user={user}
           exams={history}
           onNewUpload={() => setScreen("upload")}
+          onGatePapers={() => setScreen("gate_papers")}
           onContinueDraft={handleContinueDraft}
           onStart={handleStart}
           onResume={openAttempt}
@@ -315,6 +316,7 @@ export default function App() {
         />
       )}
 
+      {screen === "gate_papers" && <GatePapersScreen onBack={goHome} onStartExam={handleStart} />}
       {screen === "upload" && <UploadScreen onUpload={handleUpload} onBack={goHome} uploading={uploading} />}
 
       {screen === "review" && exam && (
@@ -492,6 +494,7 @@ function HomeScreen({
   user,
   exams,
   onNewUpload,
+  onGatePapers,
   onContinueDraft,
   onStart,
   onResume,
@@ -500,6 +503,7 @@ function HomeScreen({
   user: AuthUser;
   exams: ExamHistory[];
   onNewUpload: () => void;
+  onGatePapers: () => void;
   onContinueDraft: (examId: string) => void;
   onStart: (examId: string) => void;
   onResume: (attemptId: string) => void;
@@ -539,6 +543,12 @@ function HomeScreen({
           <strong>{best === null ? "—" : `${Math.round(best)}%`}</strong>
         </div>
       </section>
+
+      <div style={{ marginBottom: 16 }}>
+        <button className="ghost" onClick={onGatePapers}>
+          📚 GATE Papers Library
+        </button>
+      </div>
 
       {exams.length === 0 ? (
         <div className="card empty-state">
@@ -1247,6 +1257,103 @@ function RunnerScreen({
         <span>Version: 1.0.0</span>
         <span>Server time is authoritative</span>
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* GATE Papers Library                                                 */
+/* ------------------------------------------------------------------ */
+
+function GatePapersScreen({ onBack, onStartExam }: { onBack: () => void; onStartExam: (id: string) => void }) {
+  const [branches, setBranches] = useState<any[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState<string>("CS");
+  const [papers, setPapers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const b = await (await import("./api")).fetchGateBranches();
+        setBranches(b);
+      } catch (e: any) {
+        setError(e?.message || "Could not load branches.");
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const p = await (await import("./api")).fetchGatePapers(selectedBranch);
+        setPapers(p);
+      } catch (e: any) {
+        setError(e?.message || "Could not load papers.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [selectedBranch]);
+
+  return (
+    <div className="card">
+      <button className="ghost" onClick={onBack}>
+        ← Back to dashboard
+      </button>
+      <h2>GATE Previous Papers Library</h2>
+      <p className="muted">
+        Browse GATE previous year question papers by branch. Upload a paper PDF to create a practice test.
+      </p>
+
+      <div className="settings-grid" style={{ marginBottom: 16 }}>
+        <label>
+          Branch
+          <select value={selectedBranch} onChange={(e) => setSelectedBranch(e.target.value)}>
+            {branches.map((b: any) => (
+              <option key={b.code} value={b.code}>
+                {b.code} — {b.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {error && <div className="error">{error}</div>}
+
+      {loading ? (
+        <div className="loading">Loading papers…</div>
+      ) : papers.length === 0 ? (
+        <div className="empty-state">
+          <p className="muted">No papers registered for this branch yet. Upload a GATE paper PDF to get started.</p>
+        </div>
+      ) : (
+        <div className="exam-list">
+          {papers.map((p: any) => (
+            <article className="exam-card" key={p.id}>
+              <div className="exam-card-head">
+                <div className="exam-card-title">
+                  <h3>{p.title}</h3>
+                  <div className="exam-meta">
+                    <span className="badge">{p.year}</span>
+                    <span>{p.paper_type}</span>
+                    <span>{p.question_count ? `${p.question_count} questions` : "—"}</span>
+                    {p.has_solutions && <span className="badge">Solutions</span>}
+                  </div>
+                </div>
+                <div className="exam-actions">
+                  {p.exam_id && (
+                    <button className="primary" onClick={() => onStartExam(p.exam_id)}>
+                      Start test
+                    </button>
+                  )}
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
