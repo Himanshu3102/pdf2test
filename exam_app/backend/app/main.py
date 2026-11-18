@@ -1,7 +1,18 @@
 import os
-import time
-import uuid
-from fastapi import FastAPI, Request
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+
+sentry_dsn = os.getenv("SENTRY_DSN")
+if sentry_dsn:
+    sentry_sdk.init(
+        dsn=sentry_dsn,
+        integrations=[FastApiIntegration(), SqlalchemyIntegration()],
+        traces_sample_rate=0.2,
+        profiles_sample_rate=0.1,
+        environment=os.getenv("ENV", "production"),
+    )
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -59,6 +70,29 @@ app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 app.include_router(exams.router, prefix="/api/v1", tags=["exams"])
 app.include_router(attempts.router, prefix="/api/v1", tags=["attempts"])
 app.include_router(gate.router, prefix="/api/v1", tags=["gate"])
+
+# In-memory error log for debugging (last 50 errors)
+_error_log: list[dict] = []
+
+@app.get("/api/v1/debug/errors")
+def recent_errors():
+    return {"errors": _error_log[-20:], "count": len(_error_log)}
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    import traceback
+    entry = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "path": str(request.url.path),
+        "method": request.method,
+        "error": str(exc),
+        "traceback": traceback.format_exc()[-500:],
+    }
+    _error_log.append(entry)
+    if len(_error_log) > 50:
+        _error_log.pop(0)
+    logger.error("unhandled_exception", path=request.url.path, error=str(exc))
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 @app.get("/")
