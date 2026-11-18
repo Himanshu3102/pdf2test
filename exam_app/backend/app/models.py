@@ -25,7 +25,9 @@ class Exam(Base):
     status: Mapped[str] = mapped_column(String(32), default="draft")  # draft/published/archived
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
     settings_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
-    owner_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    gate_branch: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
+    gate_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gate_paper_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("gate_papers.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -61,7 +63,10 @@ class Question(Base):
     topic_tags: Mapped[list] = mapped_column(JSON, default=list)
     section: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    parse_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gate_branch: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
+    gate_topic: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
+    gate_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gate_question_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     review_status: Mapped[str] = mapped_column(String(32), default="needs_review")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
@@ -107,7 +112,35 @@ class AttemptAnswer(Base):
     question: Mapped["Question"] = relationship("Question")
 
 
-class ChatMessage(Base):
+class GateSyllabusTopic(Base):
+    __tablename__ = "gate_syllabus_topics"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    branch: Mapped[str] = mapped_column(String(8), index=True)  # CS, EC, etc.
+    branch_name: Mapped[str] = mapped_column(String(128))
+    subject: Mapped[str] = mapped_column(String(128), index=True)
+    topic: Mapped[str] = mapped_column(String(256))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class GatePaper(Base):
+    __tablename__ = "gate_papers"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    branch: Mapped[str] = mapped_column(String(8), index=True)
+    branch_name: Mapped[str] = mapped_column(String(128))
+    year: Mapped[int] = mapped_column(Integer, index=True)
+    paper_type: Mapped[str] = mapped_column(String(32), default="main")  # main, session1, session2
+    title: Mapped[str] = mapped_column(String(500))
+    source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    has_solutions: Mapped[bool] = mapped_column(Boolean, default=False)
+    question_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="available")  # available/processing/ready
+    exam_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("exams.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    exam: Mapped["Exam | None"] = relationship("Exam")
     __tablename__ = "chat_messages"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)

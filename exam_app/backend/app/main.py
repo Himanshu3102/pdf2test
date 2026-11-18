@@ -10,7 +10,7 @@ from slowapi.errors import RateLimitExceeded
 from app.config import settings
 from app.db import Base, engine
 from app.logging_config import setup_logging, get_logger, log_event
-from app.routers import health, exams, attempts, chat, auth
+from app.routers import health, exams, attempts, chat, auth, gate
 
 setup_logging("DEBUG" if settings.DEBUG else "INFO")
 logger = get_logger("app")
@@ -58,7 +58,7 @@ app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 app.include_router(exams.router, prefix="/api/v1", tags=["exams"])
 app.include_router(attempts.router, prefix="/api/v1", tags=["attempts"])
-app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
+app.include_router(gate.router, prefix="/api/v1", tags=["gate"])
 
 
 @app.get("/")
