@@ -64,6 +64,7 @@ class Question(Base):
     topic_tags: Mapped[list] = mapped_column(JSON, default=list)
     section: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    parse_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     gate_branch: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
     gate_topic: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
     gate_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
