@@ -153,4 +153,4 @@ class GatePaper(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
-    exam: Mapped["Exam | None"] = relationship("Exam")
+    exam: Mapped["Exam | None"] = relationship("Exam", foreign_keys=[exam_id])
