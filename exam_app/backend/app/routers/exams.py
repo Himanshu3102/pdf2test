@@ -56,6 +56,7 @@ def _exam_to_authoring(exam: Exam) -> ExamAuthoring:
         settings=es,
         settings_confirmed=exam.settings_confirmed,
         source_filename=exam.source_filename,
+        gate_branch=exam.gate_branch,
         questions=qs,
         created_at=exam.created_at,
         updated_at=exam.updated_at,
@@ -212,6 +213,8 @@ def update_exam(
         exam.settings = payload.settings.model_dump()
     if payload.settings_confirmed is not None:
         exam.settings_confirmed = payload.settings_confirmed
+    if payload.gate_branch is not None:
+        exam.gate_branch = payload.gate_branch
     if payload.questions is not None:
         for q in list(exam.questions):
             db.delete(q)

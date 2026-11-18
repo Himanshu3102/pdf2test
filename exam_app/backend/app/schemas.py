@@ -33,6 +33,8 @@ class QuestionAuthoring(BaseModel):
     source_page: int | None = None
     parse_confidence: float | None = None
     review_status: str = "needs_review"
+    gate_branch: str | None = None
+    gate_topic: str | None = None
 
 
 class QuestionTaking(BaseModel):
@@ -91,6 +93,7 @@ class ExamAuthoring(BaseModel):
     settings: ExamSettings
     settings_confirmed: bool
     source_filename: str | None = None
+    gate_branch: str | None = None
     questions: list[QuestionAuthoring] = []
     created_at: datetime
     updated_at: datetime
@@ -108,6 +111,7 @@ class ExamUpdate(BaseModel):
     instructions: str | None = None
     settings: ExamSettings | None = None
     settings_confirmed: bool | None = None
+    gate_branch: str | None = None
     questions: list[QuestionAuthoring] | None = None
 
 
