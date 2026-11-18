@@ -1,17 +1,19 @@
 import os
-import sentry_sdk
-from sentry_sdk.integrations.fastapi import FastApiIntegration
-from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
-
-sentry_dsn = os.getenv("SENTRY_DSN")
-if sentry_dsn:
-    sentry_sdk.init(
-        dsn=sentry_dsn,
-        integrations=[FastApiIntegration(), SqlalchemyIntegration()],
-        traces_sample_rate=0.2,
-        profiles_sample_rate=0.1,
-        environment=os.getenv("ENV", "production"),
-    )
+try:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+    sentry_dsn = os.getenv("SENTRY_DSN")
+    if sentry_dsn:
+        sentry_sdk.init(
+            dsn=sentry_dsn,
+            integrations=[FastApiIntegration(), SqlalchemyIntegration()],
+            traces_sample_rate=0.2,
+            profiles_sample_rate=0.1,
+            environment=os.getenv("ENV", "production"),
+        )
+except ImportError:
+    pass
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
