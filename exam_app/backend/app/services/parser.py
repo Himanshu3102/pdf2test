@@ -474,7 +474,7 @@ def _vision_parse_images(images: list[str], prompt: str = "Extract all questions
         {"role": "system", "content": VISION_PARSE_SYSTEM},
         {"role": "user", "content": content},
     ]
-    return chat_json(messages, max_tokens=min(settings.LLM_MAX_OUTPUT_TOKENS, 8192), timeout=150)
+    return chat_json(messages, max_tokens=min(settings.LLM_MAX_OUTPUT_TOKENS, 8192), timeout=120)
 
 
 def _text_parse_page(page_text: str) -> dict:
@@ -489,7 +489,7 @@ def _text_parse_page(page_text: str) -> dict:
         {"role": "system", "content": VISION_PARSE_SYSTEM},
         {"role": "user", "content": prompt},
     ]
-    return chat_json(messages, max_tokens=min(settings.LLM_MAX_OUTPUT_TOKENS, 8192), timeout=90)
+    return chat_json(messages, max_tokens=min(settings.LLM_MAX_OUTPUT_TOKENS, 8192), timeout=60)
 
 
 def _is_recitation_error(err: Exception) -> bool:
