@@ -125,15 +125,15 @@ def _process_upload(exam_id: str, storage_name: str) -> None:
         text = pdf_extraction.extraction_to_text(extraction)
         t_extract = round((time.perf_counter() - t0) * 1000, 1)
 
-        if extraction.used_ocr and settings.VISION_ENABLED:
+        if settings.VISION_ENABLED:
             try:
                 t0 = time.perf_counter()
                 parsed = parse_pdf_with_vision(path)
-                parse_warnings = ["Parsed from scanned PDF via Gemini vision."]
+                parse_warnings = ["Parsed via Gemini vision."]
                 t_parse = round((time.perf_counter() - t0) * 1000, 1)
             except Exception as e:
-                parsed = heuristic_parse(text)
-                parse_warnings = [f"Vision parse failed: {e}; falling back to local OCR heuristic."]
+                parsed, parse_warnings = parse_text(text)
+                parse_warnings = [f"Vision parse failed: {e}; falling back to text parse."] + (parse_warnings or [])
                 t_parse = round((time.perf_counter() - t0) * 1000, 1)
         else:
             t0 = time.perf_counter()

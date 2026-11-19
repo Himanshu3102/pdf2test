@@ -305,6 +305,42 @@ def strip_answer_key_section(text: str) -> str:
     return ParsedExam(title=None, instructions=None, questions=parsed_qs, warnings=warnings)
 
 
+
+def heuristic_parse(text: str) -> ParsedExam:
+    exam = _parse_q_style(text)
+    if exam is not None:
+        return exam
+    warnings = ["LLM not configured; used heuristic parser. Review carefully."]
+    questions = []
+    lines = text.splitlines()
+    current = None
+    for line in lines:
+        m = re.match(r"^\s*(?:Q\.?\s*)?(\d+)[\.\)]\s*(.+)", line)
+        if m:
+            if current:
+                questions.append(current)
+            current = {"prompt": m.group(2).strip(), "page": None}
+        else:
+            if current is not None and line.strip():
+                current["prompt"] += " " + line.strip()
+    if current:
+        questions.append(current)
+
+    parsed_qs = []
+    for idx, q in enumerate(questions):
+        parsed_qs.append(ParsedQuestion(
+            qtype="single_choice",
+            prompt=q["prompt"],
+            options=[],
+            answer_key=None,
+            confidence=0.3,
+            warnings=["Heuristic parse: options/answers not extracted; please edit."],
+        ))
+    if not parsed_qs:
+        warnings.append("No questions detected heuristically.")
+    return ParsedExam(title=None, instructions=None, questions=parsed_qs, warnings=warnings)
+
+
 def parse_text(text: str) -> tuple[ParsedExam, list[str]]:
     warnings: list[str] = []
     # Extract answer key before stripping
@@ -436,7 +472,7 @@ def parse_pdf_with_vision(pdf_path: str) -> ParsedExam:
     if ak_page_idx is not None and ak_page_idx < len(images):
         images = [img for i, img in enumerate(images) if i != ak_page_idx]
 
-    batch_size = 1
+    batch_size = 3
     batches = [images[i:i + batch_size] for i in range(0, len(images), batch_size)]
     all_questions: list[dict] = []
     warnings: list[str] = []
