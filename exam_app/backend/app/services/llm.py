@@ -10,7 +10,32 @@ logger = get_logger("llm")
 
 
 class LLMError(Exception):
-    pass
+    def __init__(self, message: str, status: int | None = None, recitation: bool = False):
+        super().__init__(message)
+        self.status = status
+        self.recitation = recitation
+
+
+def _is_anthropic(base_url: str) -> bool:
+    return "anthropic" in base_url.lower()
+
+
+def _models_to_try(primary: str, base_url: str) -> list[str]:
+    """Primary model first, then configured fallbacks (Gemini only)."""
+    models = [primary]
+    if settings.GEMINI_API_KEY and "generativelanguage" in base_url.lower():
+        for name in (settings.GEMINI_FALLBACK_MODELS or "").split(","):
+            name = name.strip()
+            if name and name not in models:
+                models.append(name)
+    return models
+
+
+def _is_permanent(err: Exception) -> bool:
+    """Auth/payload errors will fail for every model, so don't rotate."""
+    if isinstance(err, LLMError) and err.status in (400, 401, 403):
+        return True
+    return False
 
 
 def _active() -> tuple[str | None, str, str]:
@@ -29,31 +54,40 @@ def is_configured() -> bool:
     return bool(key)
 
 
-def _is_anthropic(base_url: str) -> bool:
-    return "anthropic" in base_url.lower()
-
-
 def chat_completion(messages: list[dict], max_tokens: int | None = None, json_mode: bool = False, temperature: float = 0.2, timeout: int | None = None) -> str:
     key, base_url, model = _active()
     if not key:
         raise LLMError("LLM provider not configured (missing API key).")
     max_tok = max_tokens or settings.LLM_MAX_OUTPUT_TOKENS
     to = timeout or settings.LLM_TIMEOUT_SECONDS
-    t0 = time.perf_counter()
-    try:
-        if _is_anthropic(base_url):
-            result = _anthropic_completion(key, base_url, model, messages, max_tok, json_mode, temperature, to)
-        else:
-            result = _openai_completion(key, base_url, model, messages, max_tok, json_mode, temperature, to)
-        elapsed = round((time.perf_counter() - t0) * 1000, 1)
-        log_event(logger, "llm_call", provider=base_url, model=model, max_tokens=max_tok,
-                    input_chars=sum(len(str(m.get("content", ""))) for m in messages),
-                    output_chars=len(result), latency_ms=elapsed, success=True)
-        return result
-    except Exception as e:
-        elapsed = round((time.perf_counter() - t0) * 1000, 1)
-        log_event(logger, "llm_call", level=logging.ERROR, provider=base_url, model=model, latency_ms=elapsed, success=False, error=str(e))
-        raise
+    models = _models_to_try(model, base_url)
+    last_err: Exception | None = None
+    for idx, candidate in enumerate(models):
+        t0 = time.perf_counter()
+        try:
+            if _is_anthropic(base_url):
+                result = _anthropic_completion(key, base_url, candidate, messages, max_tok, json_mode, temperature, to)
+            else:
+                result = _openai_completion(key, base_url, candidate, messages, max_tok, json_mode, temperature, to)
+            elapsed = round((time.perf_counter() - t0) * 1000, 1)
+            log_event(logger, "llm_call", provider=base_url, model=candidate, fallback_index=idx,
+                        max_tokens=max_tok,
+                        input_chars=sum(len(str(m.get("content", ""))) for m in messages),
+                        output_chars=len(result), latency_ms=elapsed, success=True)
+            return result
+        except Exception as e:
+            last_err = e
+            elapsed = round((time.perf_counter() - t0) * 1000, 1)
+            log_event(logger, "llm_call", level=logging.WARNING, provider=base_url, model=candidate,
+                        fallback_index=idx, latency_ms=elapsed, success=False, error=str(e)[:300])
+            if _is_permanent(e):
+                raise
+            if isinstance(e, LLMError) and e.recitation:
+                # All Gemini models share the recitation filter; rotating wastes time.
+                raise
+            # Try the next model; if none left, raise the last error.
+            continue
+    raise last_err or LLMError("LLM request failed")
 
 
 def _openai_completion(key, base_url, model, messages, max_tok, json_mode, temperature, timeout):
@@ -73,12 +107,26 @@ def _openai_completion(key, base_url, model, messages, max_tok, json_mode, tempe
     except Exception as e:
         raise LLMError(f"LLM request failed: {e}")
     if r.status_code >= 400:
-        raise LLMError(f"LLM provider error {r.status_code}: {r.text[:500]}")
+        raise LLMError(f"LLM provider error {r.status_code}: {r.text[:500]}", status=r.status_code)
     try:
         data = r.json()
-        return data["choices"][0]["message"]["content"]
     except Exception as e:
         raise LLMError(f"Malformed LLM response: {e}")
+    if isinstance(data, dict) and data.get("error"):
+        raise LLMError(f"LLM provider error: {str(data['error'])[:400]}")
+    try:
+        choice = (data.get("choices") or [])[0]
+        message = choice.get("message") or {}
+        content = message.get("content")
+    except Exception as e:
+        raise LLMError(f"Malformed LLM response: {e}")
+    if not content:
+        finish = choice.get("finish_reason")
+        raise LLMError(
+            f"Empty LLM response (finish_reason={finish}): {r.text[:300]}",
+            recitation=bool(finish and "RECITATION" in str(finish).upper()),
+        )
+    return content
 
 
 def _anthropic_completion(key, base_url, model, messages, max_tok, json_mode, temperature, timeout):

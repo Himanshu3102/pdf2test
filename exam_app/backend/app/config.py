@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str | None = None
     GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
     GEMINI_MODEL: str = "gemini-3.1-flash-lite"
+    # Tried in order when the primary model is overloaded/unavailable.
+    GEMINI_FALLBACK_MODELS: str = "gemini-flash-lite-latest,gemini-3-flash-preview,gemini-3.5-flash"
     # OpenCode Go (OpenAI-compatible)
     OPENCODE_GO_API_KEY: str | None = None
     OPENCODE_GO_BASE_URL: str = "https://opencode.ai/zen/go/v1"

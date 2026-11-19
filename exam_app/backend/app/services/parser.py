@@ -445,79 +445,241 @@ def _render_page_images(pdf_path: str, max_width: int = 600) -> list[str]:
     return images
 
 
-def parse_pdf_with_vision(pdf_path: str) -> ParsedExam:
+def _render_page(pdf_path: str, page_index: int, max_width: int = 600,
+                 clip_ratio: tuple[float, float] | None = None) -> str:
+    """Render one page (optionally a vertical slice) as a data URL."""
+    import fitz
+    doc = fitz.open(pdf_path)
+    try:
+        page = doc[page_index]
+        rect = page.rect
+        clip = None
+        if clip_ratio is not None:
+            y0, y1 = clip_ratio
+            clip = fitz.Rect(rect.x0, rect.y0 + rect.height * y0,
+                             rect.x1, rect.y0 + rect.height * y1)
+        scale = max_width / max(rect.width, 1)
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip)
+        return "data:image/jpeg;base64," + base64.b64encode(pix.tobytes("jpeg")).decode("ascii")
+    finally:
+        doc.close()
+
+
+def _vision_parse_images(images: list[str], prompt: str = "Extract all questions from these pages. Return JSON only.") -> dict:
+    from app.config import settings
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    for img in images:
+        content.append({"type": "image_url", "image_url": {"url": img}})
+    messages = [
+        {"role": "system", "content": VISION_PARSE_SYSTEM},
+        {"role": "user", "content": content},
+    ]
+    return chat_json(messages, max_tokens=min(settings.LLM_MAX_OUTPUT_TOKENS, 8192), timeout=300)
+
+
+def _text_parse_page(page_text: str) -> dict:
+    from app.config import settings
+    prompt = (
+        "The following is the text layer of one page of a GATE exam paper. "
+        "Extract every question on the page and return JSON only. Rebuild LaTeX "
+        "($...$) for symbols and formulas that are identifiable from the text.\n\n"
+        + page_text
+    )
+    messages = [
+        {"role": "system", "content": VISION_PARSE_SYSTEM},
+        {"role": "user", "content": prompt},
+    ]
+    return chat_json(messages, max_tokens=min(settings.LLM_MAX_OUTPUT_TOKENS, 8192), timeout=180)
+
+
+def _is_recitation_error(err: Exception) -> bool:
+    text = str(err).upper()
+    return "RECITATION" in text or "EMPTY LLM RESPONSE" in text
+
+
+def _question_key(q: dict) -> str:
+    num = q.get("number")
+    if num is not None:
+        return f"n:{num}"
+    prompt = re.sub(r"\s+", " ", str(q.get("prompt") or "")).strip().lower()
+    return "p:" + prompt[:120]
+
+
+def _dedupe_questions(questions: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    out: list[dict] = []
+    for q in questions:
+        key = _question_key(q)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(q)
+    return out
+
+
+def _clean_prompt(prompt: str) -> str:
+    prompt = (prompt or "").strip()
+    prompt = re.sub(r'^\.?\s*MCQ\s*\([^)]*\)\s*', '', prompt)
+    prompt = re.sub(r'^\.?\s*NAT\s*', '', prompt)
+    prompt = re.sub(r'^\.?\s*MSQ\s*\([^)]*\)\s*', '', prompt)
+    return prompt.strip()
+
+
+def _apply_answer_key(q: dict, ans: str) -> None:
+    ans = (ans or "").strip()
+    if not ans:
+        return
+    m = re.match(r"^([-−]?[\d.]+)\s*(?:to|–|-)\s*([-−]?[\d.]+)$", ans)
+    if m:
+        lo = float(m.group(1).replace("−", "-"))
+        hi = float(m.group(2).replace("−", "-"))
+        q["answer_key"] = round((lo + hi) / 2, 6)
+        q["tolerance"] = round(abs(hi - lo) / 2, 6)
+        q["qtype"] = "numeric"
+        return
+    if "," in ans and not ans.replace(",", "").replace(" ", "").isdigit():
+        q["answer_key"] = [a.strip() for a in ans.split(",") if a.strip()]
+        q["qtype"] = "multiple_select"
+        return
+    if re.fullmatch(r"[A-D]", ans):
+        q["answer_key"] = ans
+        if q.get("qtype") not in ("multiple_select", "numeric"):
+            q["qtype"] = "single_choice"
+        return
+    clean = ans.strip("()").strip().replace("−", "-")
+    try:
+        value = float(clean)
+        q["answer_key"] = value
+        q["qtype"] = "numeric"
+        q["tolerance"] = 0.01 if "." in clean else 0.0
+    except ValueError:
+        q["answer_key"] = ans
+
+
+def _extract_page(pdf_path: str, page_index: int, page_text: str) -> tuple[list[dict], list[str], dict]:
+    """Parse one page: full image, then halves, then text layer."""
+    warnings: list[str] = []
+    try:
+        data = _vision_parse_images([_render_page(pdf_path, page_index)])
+        qs = data.get("questions") or []
+        for q in qs:
+            q.setdefault("source_page", page_index + 1)
+        if qs:
+            return qs, warnings, {"title": data.get("title"), "instructions": data.get("instructions")}
+    except Exception as e:
+        warnings.append(f"page {page_index + 1}: vision failed: {str(e)[:160]}")
+        if not _is_recitation_error(e):
+            # Try the text layer before giving up on this page.
+            pass
+
+    # Recitation filter or empty output: parse the two halves separately.
+    try:
+        top = _vision_parse_images(
+            [_render_page(pdf_path, page_index, clip_ratio=(0.04, 0.56))],
+            prompt="Extract all questions visible in this part of the page. Return JSON only.",
+        )
+        bottom = _vision_parse_images(
+            [_render_page(pdf_path, page_index, clip_ratio=(0.44, 0.98))],
+            prompt="Extract all questions visible in this part of the page. Return JSON only.",
+        )
+        qs = _dedupe_questions((top.get("questions") or []) + (bottom.get("questions") or []))
+        for q in qs:
+            q.setdefault("source_page", page_index + 1)
+        if qs:
+            return qs, warnings, {"title": top.get("title") or bottom.get("title"),
+                                  "instructions": top.get("instructions") or bottom.get("instructions")}
+    except Exception as e:
+        warnings.append(f"page {page_index + 1}: split vision failed: {str(e)[:160]}")
+
+    if page_text.strip():
+        try:
+            data = _text_parse_page(page_text)
+            qs = data.get("questions") or []
+            for q in qs:
+                q.setdefault("source_page", page_index + 1)
+            if qs:
+                return qs, warnings, {"title": data.get("title"), "instructions": data.get("instructions")}
+        except Exception as e:
+            warnings.append(f"page {page_index + 1}: text fallback failed: {str(e)[:160]}")
+
+    warnings.append(f"page {page_index + 1}: no questions extracted")
+    return [], warnings, {}
+
+
+def parse_pdf_with_vision(pdf_path: str, workers: int = 1, batch_size: int = 5) -> ParsedExam:
     if not is_configured():
         raise LLMError("LLM not configured")
+    import fitz
     # Detect answer key page and extract answer keys
-    ak = {}
+    ak: dict[int, str] = {}
+    ak_page_idx = None
+    page_texts: list[str] = []
+    doc = fitz.open(pdf_path)
     try:
-        import fitz
-        doc = fitz.open(pdf_path)
-        ak_page_idx = None
         for i in range(len(doc)):
             page_text = doc[i].get_text()
-            if "Answer Key" in page_text and re.search(r'^\s*1\.\s*[A-D]', page_text, re.M):
+            page_texts.append(page_text)
+            if ak_page_idx is None and "Answer Key" in page_text and re.search(r'^\s*1\.\s*[A-D]', page_text, re.M):
                 ak_page_idx = i
                 ak = extract_answer_key(page_text)
-                break
+    finally:
         doc.close()
-    except Exception:
-        pass
 
-    images = _render_page_images(pdf_path)
-    if not images:
-        raise LLMError("No pages rendered")
+    page_indexes = [i for i in range(len(page_texts)) if i != ak_page_idx]
+    if not page_indexes:
+        raise LLMError("No pages to parse")
 
-    # Skip answer key page from question parsing
-    if ak_page_idx is not None and ak_page_idx < len(images):
-        images = [img for i, img in enumerate(images) if i != ak_page_idx]
-
-    batch_size = 5
-    batches = [images[i:i + batch_size] for i in range(0, len(images), batch_size)]
+    chunks = [page_indexes[i:i + batch_size] for i in range(0, len(page_indexes), batch_size)]
     all_questions: list[dict] = []
     warnings: list[str] = []
     title = None
     instructions = None
 
-    for batch in batches:
-        content = [{"type": "text", "text": "Extract all questions from these pages. Return JSON only."}]
-        for img in batch:
-            content.append({"type": "image_url", "image_url": {"url": img}})
-        messages = [
-            {"role": "system", "content": VISION_PARSE_SYSTEM},
-            {"role": "user", "content": content},
-        ]
-        from app.config import settings
-        data = chat_json(messages, max_tokens=min(settings.LLM_MAX_OUTPUT_TOKENS, 8192), timeout=300)
-        if isinstance(data, dict):
-            if title is None:
-                title = data.get("title")
-            if instructions is None:
-                instructions = data.get("instructions")
-            warnings.extend(data.get("warnings") or [])
+    def parse_chunk(chunk: list[int]) -> tuple[list[dict], list[str], dict]:
+        try:
+            images = [_render_page(pdf_path, i) for i in chunk]
+            data = _vision_parse_images(images)
             qs = data.get("questions") or []
-            all_questions.extend(qs)
+            if not qs:
+                raise LLMError("Empty chunk response")
+            return qs, [], {"title": data.get("title"), "instructions": data.get("instructions")}
+        except Exception as e:
+            # Chunk failed (recitation filter, overload, truncation). Retry page by page.
+            warnings_local = [f"pages {chunk[0] + 1}-{chunk[-1] + 1}: chunk failed: {str(e)[:140]}"]
+            qs_all: list[dict] = []
+            meta: dict = {}
+            for idx in chunk:
+                qs, ws, page_meta = _extract_page(pdf_path, idx, page_texts[idx])
+                qs_all.extend(qs)
+                warnings_local.extend(ws)
+                if not meta:
+                    meta = page_meta
+            return qs_all, warnings_local, meta
 
-    # Apply answer keys
+    if workers and workers > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(parse_chunk, chunks))
+    else:
+        results = [parse_chunk(c) for c in chunks]
+
+    for qs, ws, meta in results:
+        all_questions.extend(qs)
+        warnings.extend(ws)
+        if title is None and meta.get("title"):
+            title = meta["title"]
+        if instructions is None and meta.get("instructions"):
+            instructions = meta["instructions"]
+
+    for q in all_questions:
+        if isinstance(q.get("prompt"), str):
+            q["prompt"] = _clean_prompt(q["prompt"])
+
+    # Apply answer keys by question order
     if ak:
         for i, q in enumerate(all_questions):
-            qnum = i + 1
-            if qnum in ak:
-                ans = ak[qnum]
-                if ',' in ans and not ans.replace(',', '').replace(' ', '').isdigit():
-                    q["answer_key"] = [a.strip() for a in ans.split(',')]
-                    q["qtype"] = "multiple_select"
-                elif ans.strip('()').replace('.', '').replace(' ', '').isdigit():
-                    clean = ans.strip('()').strip()
-                    try:
-                        q["answer_key"] = float(clean)
-                        q["qtype"] = "numeric"
-                    except ValueError:
-                        q["answer_key"] = clean
-                else:
-                    q["answer_key"] = ans.strip()
-                    if q.get("qtype") not in ("multiple_select", "numeric"):
-                        q["qtype"] = "single_choice"
+            if i + 1 in ak:
+                _apply_answer_key(q, ak[i + 1])
 
     questions = [ParsedQuestion.model_validate(q) for q in all_questions]
     return ParsedExam(title=title, instructions=instructions, questions=questions, warnings=warnings)
