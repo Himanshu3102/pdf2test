@@ -472,7 +472,7 @@ def parse_pdf_with_vision(pdf_path: str) -> ParsedExam:
     if ak_page_idx is not None and ak_page_idx < len(images):
         images = [img for i, img in enumerate(images) if i != ak_page_idx]
 
-    batch_size = 3
+    batch_size = 5
     batches = [images[i:i + batch_size] for i in range(0, len(images), batch_size)]
     all_questions: list[dict] = []
     warnings: list[str] = []
