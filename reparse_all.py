@@ -1,8 +1,7 @@
-import fitz, re, sys, time, httpx, os, json, collections
+import re, sys, time, httpx, os, json, collections, argparse
 sys.path.insert(0, r'C:\Users\himan\Desktop\pdf2test\exam_app\backend')
 
-from app.services import pdf_extraction
-from app.services.parser import parse_pdf_with_vision, extract_answer_key
+from app.services.parser import parse_pdf_with_vision, extract_answer_key, _apply_answer_key
 
 API = 'http://13.233.27.70/api/v1'
 PAPERS_DIR = r'C:\Users\himan\Desktop\pdf2test\previous papers'
@@ -17,6 +16,11 @@ BRANCH_NAMES = {
     'CE': 'Civil Engineering',
     'DA': 'Data Science and Artificial Intelligence',
 }
+
+cli = argparse.ArgumentParser()
+cli.add_argument('--start', type=int, default=0)
+cli.add_argument('--limit', type=int, default=0)
+args = cli.parse_args()
 
 r = httpx.post(f'{API}/auth/login', json={'username': 'gateadmin', 'password': 'gateadmin123'}, timeout=10)
 h = {'Authorization': 'Bearer ' + r.json()['access_token']}
@@ -51,76 +55,25 @@ def title_for(branch, year, set_num):
 
 
 def parse_pdf_local(pdf_path):
-    ext = pdf_extraction.extract_text(pdf_path, ocr_enabled=False)
-    full_text = pdf_extraction.extraction_to_text(ext)
-    ak = extract_answer_key(full_text)
-
-    doc = fitz.open(pdf_path)
-    total = doc.page_count
-    ak_page = None
-    for i in range(total):
-        pt = doc[i].get_text()
-        if 'Answer Key' in pt and re.search(r'^\s*1\.\s*[A-D]', pt, re.M):
-            ak_page = i
-            break
-    question_end = ak_page if ak_page is not None else total
-    doc.close()
-
-    all_q = []
-    for start in range(0, question_end, 5):
-        end = min(start + 5, question_end)
-        new_doc = fitz.open()
-        src = fitz.open(pdf_path)
-        for i in range(start, end):
-            new_doc.insert_pdf(src, from_page=i, to_page=i)
-        src.close()
-        chunk = r'C:\Users\himan\Desktop\pdf2test\_batch_chunk.pdf'
-        new_doc.save(chunk)
-        new_doc.close()
-
-        ok = False
-        for attempt in range(3):
-            try:
-                res = parse_pdf_with_vision(chunk)
-                all_q.extend(res.questions)
-                print(f'    pages {start+1}-{end}: {len(res.questions)} Qs', flush=True)
-                ok = True
-                break
-            except Exception as e:
-                print(f'    pages {start+1}-{end} attempt {attempt+1} failed: {str(e)[:90]}', flush=True)
-                time.sleep(6)
-        if not ok:
-            print(f'    pages {start+1}-{end}: FAILED', flush=True)
-
-    for i, q in enumerate(all_q):
-        n = i + 1
-        q.prompt = re.sub(r'^\.?\s*MCQ\s*\([^)]*\)\s*', '', q.prompt).strip()
-        q.prompt = re.sub(r'^\.?\s*NAT\s*', '', q.prompt).strip()
-        if n not in ak:
-            continue
-        ans = ak[n].strip()
-        m = re.match(r'^([\d.]+)\s+to\s+([\d.]+)$', ans)
-        if m:
-            lo, hi = float(m.group(1)), float(m.group(2))
-            q.answer_key = round((lo + hi) / 2, 6)
-            q.tolerance = round((hi - lo) / 2, 6)
-            q.qtype = 'numeric'
-        elif ',' in ans and not ans.replace(',', '').replace(' ', '').isdigit():
-            q.answer_key = [a.strip() for a in ans.split(',') if a.strip()]
-            q.qtype = 'multiple_select'
-        elif re.fullmatch(r'[A-D]', ans):
-            q.answer_key = ans
-            if q.qtype not in ('multiple_select', 'numeric'):
-                q.qtype = 'single_choice'
-        else:
-            clean = ans.strip('()').strip()
-            try:
-                q.answer_key = float(clean)
-                q.qtype = 'numeric'
-                q.tolerance = 0.01 if '.' in clean else 0.0
-            except ValueError:
-                q.answer_key = clean
-    return all_q
+    res = parse_pdf_with_vision(pdf_path, workers=2, batch_size=5)
+    questions = res.questions
+    if questions and any(q.answer_key is None for q in questions):
+        try:
+            import fitz
+            doc = fitz.open(pdf_path)
+            full_text = '\n'.join(page.get_text() for page in doc)
+            doc.close()
+            ak = extract_answer_key(full_text)
+            for i, q in enumerate(questions):
+                if q.answer_key is None and (i + 1) in ak:
+                    d = q.model_dump()
+                    _apply_answer_key(d, ak[i + 1])
+                    q.answer_key = d['answer_key']
+                    q.qtype = d['qtype']
+                    q.tolerance = d.get('tolerance')
+        except Exception as e:
+            print(f'    answer-key safety net failed: {e}', flush=True)
+    return questions
 
 
 def to_authoring(q, idx):
@@ -148,10 +101,22 @@ def to_authoring(q, idx):
     }
 
 
+def save_report(report):
+    with open(REPORT, 'w', encoding='utf-8') as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+
+
 pdfs = sorted(f for f in os.listdir(PAPERS_DIR) if f.lower().endswith('.pdf'))
 report = []
+if os.path.exists(REPORT):
+    try:
+        report = json.load(open(REPORT, encoding='utf-8'))
+    except Exception:
+        report = []
+done_titles = {r.get('title') for r in report if r.get('status') == 'patched'}
 
-for idx, fname in enumerate(pdfs):
+eligible = []
+for fname in pdfs:
     info = parse_filename(fname)
     if not info:
         continue
@@ -159,36 +124,48 @@ for idx, fname in enumerate(pdfs):
     title = title_for(branch, year, set_num)
     es = by_title.get(title, [])
     if len(es) != 1:
-        print(f'[{idx+1}/{len(pdfs)}] SKIP (no unique exam): {title}', flush=True)
         continue
     exam = es[0]
-
-    # Skip DA (already fixed)
     if branch == 'DA':
         continue
-
-    ex = httpx.get(f"{API}/exams/{exam['id']}", headers=h, timeout=60).json()
+    if title in done_titles:
+        continue
+    try:
+        ex = httpx.get(f"{API}/exams/{exam['id']}", headers=h, timeout=60).json()
+    except Exception:
+        continue
     qs_old = ex['questions']
     old_count = len(qs_old)
     old_math = sum(1 for q in qs_old if '$' in q['prompt'])
     if old_count and old_math / old_count >= 0.10:
-        print(f'[{idx+1}/{len(pdfs)}] SKIP (already has math {old_math}/{old_count}): {title}', flush=True)
         continue
+    eligible.append((fname, exam, title, branch, old_count, old_math))
 
-    print(f'[{idx+1}/{len(pdfs)}] PARSING {fname} (old {old_count} Qs, math {old_math})', flush=True)
+eligible = eligible[args.start:]
+if args.limit:
+    eligible = eligible[:args.limit]
+print(f'Eligible: {len(eligible)} papers (start={args.start} limit={args.limit})', flush=True)
+
+for idx, (fname, exam, title, branch, old_count, old_math) in enumerate(eligible):
+    print(f'[{idx+1}/{len(eligible)}] PARSING {fname} (old {old_count} Qs, math {old_math})', flush=True)
     pdf_path = os.path.join(PAPERS_DIR, fname)
+    t0 = time.time()
     try:
         qs = parse_pdf_local(pdf_path)
     except Exception as e:
-        print(f'  PARSE FAILED: {e}', flush=True)
-        report.append({'title': title, 'status': 'parse_failed', 'error': str(e)[:200]})
+        print(f'  PARSE FAILED after {time.time()-t0:.0f}s: {e}', flush=True)
+        report.append({'title': title, 'status': 'parse_failed', 'error': str(e)[:300]})
+        save_report(report)
         continue
 
     new_count = len(qs)
-    print(f'  parsed {new_count} Qs (old {old_count})', flush=True)
+    with_key = sum(1 for q in qs if q.answer_key is not None)
+    math = sum(1 for q in qs if '$' in q.prompt)
+    print(f'  parsed {new_count} Qs in {time.time()-t0:.0f}s | math {math} | keys {with_key}', flush=True)
     if new_count < 35 and new_count <= old_count:
         print('  NOT patching (too few and not better than old)', flush=True)
         report.append({'title': title, 'status': 'skipped_few', 'new': new_count, 'old': old_count})
+        save_report(report)
         continue
 
     payload = {
@@ -197,12 +174,18 @@ for idx, fname in enumerate(pdfs):
         'gate_branch': branch,
         'questions': [to_authoring(q, i) for i, q in enumerate(qs)],
     }
-    resp = httpx.patch(f'{API}/exams/{exam["id"]}', json=payload, headers=h, timeout=300)
-    print(f'  PATCH {resp.status_code} ({new_count} Qs)', flush=True)
-    report.append({'title': title, 'status': 'patched' if resp.status_code == 200 else 'patch_failed',
-                   'new': new_count, 'old': old_count, 'code': resp.status_code})
-    with open(REPORT, 'w', encoding='utf-8') as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
+    try:
+        resp = httpx.patch(f'{API}/exams/{exam["id"]}', json=payload, headers=h, timeout=300)
+        code = resp.status_code
+        err = None if code == 200 else resp.text[:200]
+    except Exception as e:
+        code = None
+        err = str(e)[:200]
+    print(f'  PATCH {code} ({new_count} Qs){"" if err is None else " | " + err}', flush=True)
+    report.append({'title': title, 'status': 'patched' if code == 200 else 'patch_failed',
+                   'new': new_count, 'old': old_count, 'math': math, 'keys': with_key,
+                   'code': code, 'error': err})
+    save_report(report)
     time.sleep(2)
 
 print('\n=== BATCH DONE ===', flush=True)
