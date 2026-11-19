@@ -10,10 +10,11 @@ logger = get_logger("llm")
 
 
 class LLMError(Exception):
-    def __init__(self, message: str, status: int | None = None, recitation: bool = False):
+    def __init__(self, message: str, status: int | None = None, recitation: bool = False, timed_out: bool = False):
         super().__init__(message)
         self.status = status
         self.recitation = recitation
+        self.timed_out = timed_out
 
 
 def _is_anthropic(base_url: str) -> bool:
@@ -61,14 +62,18 @@ def chat_completion(messages: list[dict], max_tokens: int | None = None, json_mo
     max_tok = max_tokens or settings.LLM_MAX_OUTPUT_TOKENS
     to = timeout or settings.LLM_TIMEOUT_SECONDS
     models = _models_to_try(model, base_url)
+    deadline = time.monotonic() + max(to, 60) * 1.5
     last_err: Exception | None = None
     for idx, candidate in enumerate(models):
+        remaining = deadline - time.monotonic()
+        if remaining <= 5:
+            break
         t0 = time.perf_counter()
         try:
             if _is_anthropic(base_url):
-                result = _anthropic_completion(key, base_url, candidate, messages, max_tok, json_mode, temperature, to)
+                result = _anthropic_completion(key, base_url, candidate, messages, max_tok, json_mode, temperature, min(to, int(remaining)))
             else:
-                result = _openai_completion(key, base_url, candidate, messages, max_tok, json_mode, temperature, to)
+                result = _openai_completion(key, base_url, candidate, messages, max_tok, json_mode, temperature, min(to, int(remaining)))
             elapsed = round((time.perf_counter() - t0) * 1000, 1)
             log_event(logger, "llm_call", provider=base_url, model=candidate, fallback_index=idx,
                         max_tokens=max_tok,
@@ -84,6 +89,9 @@ def chat_completion(messages: list[dict], max_tokens: int | None = None, json_mo
                 raise
             if isinstance(e, LLMError) and e.recitation:
                 # All Gemini models share the recitation filter; rotating wastes time.
+                raise
+            if isinstance(e, LLMError) and e.timed_out:
+                # A timeout is model-specific; don't burn time rotating.
                 raise
             # Try the next model; if none left, raise the last error.
             continue
